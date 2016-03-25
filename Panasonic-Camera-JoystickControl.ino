@@ -1,6 +1,7 @@
 #include <SPI.h>
 #include <Ethernet2.h>
 #include <EEPROM.h>      // For storing IP numbers
+#include <EthernetUdp2.h>
 
 #include "SkaarhojUtils.h"
 SkaarhojUtils utils;   // joystick for Pan & Tilt
@@ -21,16 +22,8 @@ EthernetClient client;
 byte mac[] = {
   0x90, 0xA2, 0xDA, 0x10, 0x59, 0xEB
 };
-uint8_t ip[4];        // Will hold the Arduino IP address
-uint8_t camera_ip[4];  // Will hold the ATEM IP address
-//static uint8_t ip[] = {
-//  10, 255, 255, 98 };    // IP address of your SKAARHOJ device, typical default is 192.168.10.99
-//
-//static uint8_t camera_ip[] = {
-//  10, 255, 255, 25 };    // IP address of your ATEM switcher, factory default is 192.168.10.240
-
-//IPAddress ip(10, 255, 255, 98);
-//IPAddress camera(10, 255, 255, 25);
+uint8_t ip[4] = { 10, 255, 255, 98 };        // Will hold the Arduino IP address
+uint8_t camera_ip[4] = { 10, 255, 255, 98};  // Will hold tthe Panasonic Camera IP address
 
 #include <ClientPanaAWHExTCP.h>
 ClientPanaAWHExTCP cameraObj;
@@ -38,40 +31,44 @@ ClientPanaAWHExTCP cameraObj;
 #include <MemoryFree.h>
 #include <Streaming.h>
 
+EthernetUDP Udp;
+// ターゲットのブロードキャストアドレスを指定
+unsigned int _remotePort = 10670;
+unsigned int localPort   = 10669;   //local port to listen on
+
 // DEBUG Switch.
-//#define DEBUG     // Debug Setting
-//#define MEM_DEBUG // Debug Setting
+// #define DEBUG     // Debug Setting
+// #define MEM_DEBUG // Debug Setting
 
 // Setup logic
 void setup() {
 #ifdef DEBUG
   delay(5000);
 #endif
-
   Serial.begin(115200);
-  Serial.println("Serial Start");
-
+  Serial.println(F("Serial Start"));
 #ifdef MEM_DEBUG
   // Shows free memory:
   Serial << F("Setup freeMemory()=") << freeMemory() << "\n";
 #endif
-
   // give the ethernet module time to boot up:
   delay(1000);
-
+  // Network Config (IP address / MAC Address /Server IP) from EEPROM
   eeprom_read();
 
-  if (Ethernet.begin(mac) == 0) {
-    Serial.println("Failed to configure Ethernet using DHCP");
+  if (Ethernet.begin(mac) == 0) { // Update EEPROM IP to DHCP Address
+    Serial.println(F("Failed to configure Ethernet using DHCP"));
     Ethernet.begin(mac, ip);
   }
-
 #ifdef DEBUG
-  Serial.print("IP:");
+  Serial.print(F("Local IP:"));
   Serial.println(Ethernet.localIP());
 #endif
 
-  cameraObj.begin(IPAddress(camera_ip[0], camera_ip[1], camera_ip[2], camera_ip[3]));
+  // camera find udp communication
+  camera_find();
+
+  cameraObj.begin(IPAddress(Udp.remoteIP()));
   cameraObj.connect();
 
   // Initializing the joystick at A12(H) and A13(V) + 35 (Joystick 1).
@@ -94,7 +91,7 @@ void setup() {
   // 74HC165入力端子のデータを読込み表示を行う
   ShiftData = ShiftIn(MISO_1, SCK_1, SL_1) ;
 #ifdef DEBUG
-  Serial.println("ShiftData: ");
+  Serial.println(F("ShiftData: "));
   Serial.println(ShiftData, BIN);
 #endif
 
@@ -131,63 +128,63 @@ void loop() {
     switch (ShiftData) {
       case B01111111:
 #ifdef DEBUG
-        Serial.println("Preset 5");
+        Serial.println(F("Preset 5"));
 #endif
         camera_preset(5);
         break;
       case B10111111:
 #ifdef DEBUG
-        Serial.println("Preset 6");
+        Serial.println(F("Preset 6"));
 #endif
         camera_preset(6);
         break;
       case B11011111:
 #ifdef DEBUG
-        Serial.println("Preset 7");
+        Serial.println(F("Preset 7"));
 #endif
         camera_preset(7);
         break;
       case B11101111:
 #ifdef DEBUG
-        Serial.println("Preset 8");
+        Serial.println(F("Preset 8"));
 #endif
         camera_preset(8);
         break;
       case B11110111:
 #ifdef DEBUG
-        Serial.println("Preset 1");
+        Serial.println(F("Preset 1"));
 #endif
         camera_preset(1);
         break;
       case B11111011:
 #ifdef DEBUG
-        Serial.println("Preset 2");
+        Serial.println(F("Preset 2"));
 #endif
         camera_preset(2);
         break;
       case B11111101:
 #ifdef DEBUG
-        Serial.println("Preset 3");
+        Serial.println(F("Preset 3"));
 #endif
         camera_preset(3);
         break;
       case B11111110:
 #ifdef DEBUG
-        Serial.println("Preset 4");
+        Serial.println(F("Preset 4"));
 #endif
         camera_preset(4);
         break;
 #ifdef DEBUG
       default:
         //if nothing else matches, or 2 switch pushed do the default
-        Serial.print("OTHER switchVar1:");
+        Serial.print(F("OTHER switchVar1:"));
         Serial.println(ShiftData, BIN);
 #endif
     }
   }
 #ifdef MEM_DEBUG
   // Shows free memory:
-  //Serial << F("freeMemory()=") << freeMemory() << "\n";
+  Serial << F("freeMemory()=") << freeMemory() << F("\n");
 #endif
 }
 
@@ -239,7 +236,9 @@ void eeprom_read() {
   // INITIALIZE EEPROM memory:
   // *********************************
   // Check if EEPROM has ever been initialized, if not, install default IP
+  Serial.println(F("eeprom_read proc"));
   if (EEPROM.read(0) != 12 ||  EEPROM.read(1) != 232)  {  // Just randomly selected values which should be unlikely to be in EEPROM by default.
+    Serial.println(F("EEPROM write if not available"));
     // Set these random values so this initialization is only run once!
     EEPROM.write(0, 12);
     EEPROM.write(1, 232);
@@ -261,6 +260,8 @@ void eeprom_read() {
   // *********************************
   // Setting up IP addresses, starting Ethernet
   // *********************************
+#ifdef DEBUG
+  Serial.println(F("eeprom read"));
 
   ip[0] = EEPROM.read(0 + 2);
   ip[1] = EEPROM.read(1 + 2);
@@ -274,8 +275,9 @@ void eeprom_read() {
   camera_ip[2] = EEPROM.read(2 + 2 + 4);
   camera_ip[3] = EEPROM.read(3 + 2 + 4);
 
-  Serial << F("Local IP Address: ") << ip[0] << "." << ip[1] << "." << ip[2] << "." << ip[3] << "\n";
-  Serial << F("Camera IP Address: ") << camera_ip[0] << "." << camera_ip[1] << "." << camera_ip[2] << "." << camera_ip[3] << "\n";
+  Serial << F("EEPROM Local IP Address: ") << ip[0] << "." << ip[1] << "." << ip[2] << "." << ip[3] << F("\n");
+  Serial << F("EEPROM Camera IP Address: ") << camera_ip[0] << "." << camera_ip[1] << "." << camera_ip[2] << "." << camera_ip[3] << F("\n");
+#endif
 
   // Setting MAC address:
   mac[0] = EEPROM.read(10);
@@ -286,7 +288,7 @@ void eeprom_read() {
   mac[5] = EEPROM.read(15);
   char buffer[18];
   sprintf(buffer, "%02X:%02X:%02X:%02X:%02X:%02X", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
-  Serial << F("Local MAC address: ") << buffer << F(" - Checksum: ")
+  Serial << F("EEPROM Local MAC address: ") << buffer << F(" - Checksum: ")
          << ((mac[0] + mac[1] + mac[2] + mac[3] + mac[4] + mac[5]) & 0xFF) << "\n";
   if ((uint8_t)EEPROM.read(16) != ((mac[0] + mac[1] + mac[2] + mac[3] + mac[4] + mac[5]) & 0xFF))  {
     Serial << F("MAC address not found in EEPROM memory!\n") <<
@@ -294,3 +296,65 @@ void eeprom_read() {
            F("The MAC address is found on the backside of your Ethernet Shield/Board\n (STOP)");
     while (true);
   }
+}
+void camera_find() {
+  // 0xFFはMACアドレス、0xAAはIPアドレス（コードで実アドレスに修正）
+  int time = 0;
+  int i = 0;
+  bool packet_flg = false;
+  byte packet[94] = {
+    0x00, 0x01, 0x00, 0x2a, 0x00, 0x0d, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xAA, 0xAA,
+    0xAA, 0xAA, 0x00, 0x00, 0x20, 0x11, 0x1e, 0x11, 0x23, 0x1f,
+    0x1e, 0x19, 0x13, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xff, 0xf0,
+    0x00, 0x26, 0x00, 0x20, 0x00, 0x21, 0x00, 0x22, 0x00, 0x23,
+    0x00, 0x25, 0x00, 0x28, 0x00, 0x40, 0x00, 0x41, 0x00, 0x42,
+    0x00, 0x44, 0x00, 0xa5, 0x00, 0xa6, 0x00, 0xa7, 0x00, 0xa8,
+    0x00, 0xad, 0x00, 0xb3, 0x00, 0xb4, 0x00, 0xb7, 0x00, 0xb8,
+    0xff, 0xff, 0x11, 0xe2
+  };
+
+  //byte remoteIP[] = { ip[0], ip[1], ip[2], 255 };
+  byte _remoteIP[4] = { 255, 255, 255, 255 };
+  packet[12] = mac[0];
+  packet[13] = mac[1];
+  packet[14] = mac[2];
+  packet[15] = mac[3];
+  packet[16] = mac[4];
+  packet[17] = mac[5];
+
+  packet[18] = ip[0];
+  packet[19] = ip[1];
+  packet[20] = ip[2];
+  packet[21] = ip[3];
+  Udp.begin(localPort);
+  // Packet Send
+#ifdef DEBUG
+  Serial.println(F("-> UDP Packet send"));
+#endif
+
+  Udp.beginPacket(_remoteIP, _remotePort);
+  Udp.write(packet, 94);
+  Udp.endPacket();
+
+  // Packet Read
+  while (packet_flg == false) {
+    int packetsize = Udp.parsePacket();
+    if (packetsize) {
+      byte packetBuffer[packetsize];
+      Udp.read(packetBuffer, packetsize);
+#ifdef DEBUG
+      Serial.println(F("<- UDP Packet recieved"));
+      Serial.print(F("Camera IP:"));
+      Serial.println(Udp.remoteIP());
+      //Serial.print(F("Camera Port:"));
+      //Serial.println(Udp.remotePort());
+      //Serial.print(F("Packet Size:"));
+      //Serial.println(packetsize);
+#endif
+      Udp.stop();
+      packet_flg = true;
+    }
+  }
+}
